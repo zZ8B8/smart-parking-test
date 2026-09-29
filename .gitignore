@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 运行产物
+*.log
+tools/_out/
