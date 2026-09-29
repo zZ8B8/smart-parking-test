@@ -1,30 +1,120 @@
 @echo off
-chcp 65001 >nul
+setlocal
 cd /d "%~dp0"
-echo ============================================
-echo   æ™ºèƒ½åœè½¦ç®¡ç†ç³»ç»ŸæŽ¥å£è‡ªåŠ¨åŒ–æµ‹è¯•
-echo ============================================
+title ÖÇÄÜÍ£³µ¹ÜÀíÏµÍ³ ¡¤ ½Ó¿Ú×Ô¶¯»¯²âÊÔ
+
+echo ==================================================
+echo   ÖÇÄÜÍ£³µ¹ÜÀíÏµÍ³ ¡¤ ½Ó¿Ú×Ô¶¯»¯²âÊÔ
+echo ==================================================
 echo.
-echo [1/3] æ£€æŸ¥ Python çŽ¯å¢ƒ...
-python --version
-if errorlevel 1 (
-    echo æœªæ£€æµ‹åˆ° Pythonï¼Œè¯·å…ˆå®‰è£… Python 3.8 ä»¥ä¸Šç‰ˆæœ¬ã€‚
-    pause
-    exit /b 1
-)
+echo [1/4] Ì½²â¿ÉÓÃµÄ Python ½âÊÍÆ÷...
+
+set "PYEXE="
+
+rem ---- ºòÑ¡Ò»£º±¾ÏîÄ¿µ±Ç°Ê¹ÓÃ»·¾³ ----
+call :set_py "%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+if defined PYEXE goto :found
+call :set_py "%USERPROFILE%\.workbuddy\binaries\python\versions\3.13.12\python.exe"
+if defined PYEXE goto :found
+
+rem ---- ºòÑ¡¶þ£º³£¼û°²×°Î»ÖÃ ----
+call :set_py "C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python39_64\python.exe"
+if defined PYEXE goto :found
+call :set_py "C:\Python313\python.exe"
+if defined PYEXE goto :found
+call :set_py "C:\Python312\python.exe"
+if defined PYEXE goto :found
+call :set_py "C:\Python311\python.exe"
+if defined PYEXE goto :found
+call :set_py "C:\Python310\python.exe"
+if defined PYEXE goto :found
+call :set_py "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
+if defined PYEXE goto :found
+call :set_py "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+if defined PYEXE goto :found
+call :set_py "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+if defined PYEXE goto :found
+
+rem ---- ºòÑ¡Èý£ºpy Æô¶¯Æ÷£¨»»»úÆ÷Ê±×îÍ¨ÓÃ£©----
+call :set_py_launcher 3.13
+if defined PYEXE goto :found
+call :set_py_launcher 3.12
+if defined PYEXE goto :found
+call :set_py_launcher 3.11
+if defined PYEXE goto :found
+call :set_py_launcher 3.10
+if defined PYEXE goto :found
+call :set_py_launcher 3.9
+if defined PYEXE goto :found
+call :set_py_launcher 3
+if defined PYEXE goto :found
+goto :nopython
+
+
+:set_py
+if defined PYEXE goto :eof
+if not exist %1 goto :eof
+%1 -c "import sys" >nul 2>nul
+if errorlevel 1 goto :eof
+set "PYEXE=%~1"
+goto :eof
+
+:set_py_launcher
+if defined PYEXE goto :eof
+for /f "delims=" %%I in ('py -%1 -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%I"
+goto :eof
+
+
+:found
+echo       ÕÒµ½£º%PYEXE%
+"%PYEXE%" --version
 echo.
-echo [2/3] æ£€æŸ¥ pytest...
-python -m pytest --version >nul 2>nul
-if errorlevel 1 (
-    echo æœªå®‰è£… pytestï¼Œæ­£åœ¨å®‰è£…...
-    python -m pip install -r requirements.txt
-)
+echo [2/4] ¼ì²é pytest...
+"%PYEXE%" -m pytest --version >nul 2>nul
+if not errorlevel 1 goto :run_tests
+echo       Î´¼ì²âµ½ pytest£¬ÕýÔÚ×Ô¶¯°²×°£¨Ö»Ðè×°Ò»´Î£©...
+"%PYEXE%" -m pip install pytest --quiet --disable-pip-version-check
+"%PYEXE%" -m pytest --version >nul 2>nul
+if not errorlevel 1 goto :run_tests
+echo       »»¸ö·½Ê½ÔÙÊÔÒ»´Î...
+"%PYEXE%" -m pip install pytest --user --quiet --disable-pip-version-check
+"%PYEXE%" -m pytest --version >nul 2>nul
+if errorlevel 1 goto :nopytest
+
+
+:run_tests
 echo.
-echo [3/3] æ‰§è¡Œæµ‹è¯•...
+echo [3/4] ¿ªÊ¼Ö´ÐÐ²âÊÔ...
 echo.
-python -m pytest tests -v
+"%PYEXE%" -m pytest tests -v
 echo.
-echo ============================================
-echo   æµ‹è¯•ç»“æŸã€‚æŒ‰ä»»æ„é”®å…³é—­çª—å£ã€‚
-echo ============================================
+echo [4/4] Íê³É¡£
+echo.
+echo ==================================================
+echo   ²âÊÔ½áÊø£¬°´ÈÎÒâ¼ü¹Ø±Õ´°¿Ú¡£
+echo ==================================================
 pause >nul
+exit /b 0
+
+
+:nopython
+echo.
+echo   [´íÎó] Ã»ÓÐÕÒµ½¿ÉÓÃµÄ Python ½âÊÍÆ÷¡£
+echo.
+echo   ±¾ÏîÄ¿µÄ²âÊÔ½Å±¾ÐèÒª Python 3.8 ¼°ÒÔÉÏ°æ±¾¡£
+echo   Çëµ½ https://www.python.org/downloads/ ÏÂÔØ°²×°£¬
+echo   °²×°Ê±Îñ±Ø¹´Ñ¡ "Add python.exe to PATH"£¬È»ºóÖØÐÂÔËÐÐ±¾½Å±¾¡£
+echo.
+pause >nul
+exit /b 1
+
+
+:nopytest
+echo.
+echo   [´íÎó] pytest °²×°Ê§°Ü£¨Í¨³£ÊÇÍøÂçÎÊÌâ£©¡£
+echo   ÇëÊÖ¶¯Ö´ÐÐÏÂÃæÕâÐÐÃüÁî£¬È»ºóÖØÐÂÔËÐÐ±¾½Å±¾£º
+echo.
+echo       "%PYEXE%" -m pip install pytest
+echo.
+pause >nul
+exit /b 1

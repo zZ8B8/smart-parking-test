@@ -69,7 +69,9 @@ pytest tests/bugs -v
 python tools/collect_evidence.py
 ```
 
-Windows 用户可直接双击 `一键运行测试.bat`。
+Windows 用户可直接双击 `一键运行测试.bat` ——
+脚本会**自己探测**机器上可用的 Python 解释器（不依赖 PATH 里的 `python`，
+因为 Windows 上它常常是微软商店的占位符），缺 pytest 会自动安装，然后直接跑测试。
 
 ## 3. 业务规则
 
