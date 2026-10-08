@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}智能停车管理系统{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="nav">
+    <div class="nav-inner">
+      <a class="logo" href="/">
+        <span class="logo-mark">P</span>
+        <span class="logo-text">智能停车管理系统</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/" data-page="index">车场总览</a>
+        <a href="/entry" data-page="entry">入场登记</a>
+        <a href="/exit" data-page="exit">出场结算</a>
+        <a href="/tickets" data-page="tickets">停车记录</a>
+        <a href="/card" data-page="card">月卡管理</a>
+      </nav>
+      <div class="nav-right">
+        <span class="clock-chip" id="clock-chip">—</span>
+        <button class="btn btn-ghost btn-sm" id="btn-reset" title="把数据恢复到初始状态">重置数据</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="alert-box"></div>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      智能停车管理系统 · 测试靶场 V1.0 &nbsp;|&nbsp;
+      后端 Flask + MySQL &nbsp;|&nbsp;
+      <a href="/docs-list" onclick="return false;" title="文档见项目 docs/ 目录">测试文档见 docs/</a>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+  {% block script %}{% endblock %}
+</body>
+</html>

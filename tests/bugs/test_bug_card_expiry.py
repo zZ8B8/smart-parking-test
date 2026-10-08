@@ -1,42 +1,54 @@
 # -*- coding: utf-8 -*-
-"""缺陷复现 · 月卡有效期未校验
+"""BUG-S4 · 过期月卡仍然免费出场
 
-BUG-S4 _has_free_pass 只判断「该车牌是否办过月卡」，没有比对 valid_until。
-        过期月卡依然享受免费出场 —— 停车费被少收。
+需求：「月卡：**有效期内**免费，车牌与月卡绑定」。
+过期月卡不应再享受免费待遇，应按普通车辆计费。
+
+实际：service._has_free_pass() 只判断月卡记录是否存在，
+**没有比对 valid_until 与当前时间**。于是过期月卡永久免费 —— 车场持续漏收。
+
+初始数据里已经准备好一张过期月卡：京B00001（有效期 2024-01-01）。
 """
 import pytest
 
-pytestmark = pytest.mark.known_bug
 
-EXPIRED = "2020-01-01"          # 早已过期
-
-
-@pytest.mark.xfail(reason="BUG-S4 月卡有效期未校验", strict=False)
-def test_bug_s4_expired_card_should_be_charged(api, park, leave, advance):
-    """BUG-S4 月卡已过期，出场应按正常标准收费。
-
-    场景：办理有效期至 2020-01-01 的月卡（已过期），停车 3 小时。
-    期望：收费 11 元（5 + 3 × 2）
-    实际：收费 0 元 —— 过期月卡依然免费
-    """
-    api.post("/api/cards", {"plate": "津A12345", "validUntil": EXPIRED})
-    park("津A12345")
-    advance(3 * 3600)
-
-    fee = leave("津A12345").data["fee"]
-    assert fee == 11.0, "月卡已于 %s 过期，实际收费 %.1f 元" % (EXPIRED, fee)
+@pytest.mark.xfail(reason="BUG-S4 过期月卡仍免费：没有比对有效期", strict=True)
+def test_expired_card_should_be_charged(api):
+    """京B00001 的月卡 2024-01-01 就过期了，停 3 小时应收费 11 元。"""
+    api.entry("京B00001")
+    api.advance_clock(3 * 3600)
+    assert api.exit("京B00001")["fee"] == 11.0
 
 
-@pytest.mark.xfail(reason="BUG-S4 月卡有效期未校验", strict=False)
-def test_bug_s4_expired_then_renewed_card(api, park, leave, advance):
-    """BUG-S4 有效期取值完全不影响判定（对比：未来卡与过期卡行为一致）。
+@pytest.mark.xfail(reason="BUG-S4 过期月卡仍免费：漏收停车费", strict=True)
+def test_expired_card_should_not_be_free(api):
+    """过期月卡的出场费用不能为 0。"""
+    api.entry("京B00001")
+    api.advance_clock(6 * 3600)
+    assert api.exit("京B00001")["fee"] != 0.0
 
-    期望：过期卡应收费，未来卡免费，两者行为不同
-    实际：两者都是 0 元
-    """
-    api.post("/api/cards", {"plate": "津A12345", "validUntil": EXPIRED})
-    park("津A12345")
-    advance(3600)
-    expired_fee = leave("津A12345").data["fee"]
 
-    assert expired_fee == 5.0, "过期卡不应免费，实际收费 %.1f 元" % expired_fee
+@pytest.mark.xfail(reason="BUG-S4 过期月卡与有效月卡表现完全相同", strict=True)
+def test_expired_and_valid_card_behave_differently(api):
+    """有效月卡（京A12345）免费，过期月卡（京B00001）应收费 —— 两者不应一样。"""
+    api.entry("京A12345")
+    api.entry("京B00001")
+    api.advance_clock(3 * 3600)
+    valid_fee = api.exit("京A12345")["fee"]
+    expired_fee = api.exit("京B00001")["fee"]
+
+    assert valid_fee == 0.0
+    assert expired_fee > 0.0, "过期月卡不应免费"
+
+
+def test_valid_card_is_free(api):
+    """对照用例：有效期内月卡免费 —— 这部分逻辑是对的。"""
+    api.entry("京A12345")
+    api.advance_clock(3 * 3600)
+    assert api.exit("京A12345")["fee"] == 0.0
+
+
+def test_card_expiry_flag_is_reported(api):
+    """对照用例：接口本身能正确算出「是否过期」，只是计费时没用它。"""
+    assert api.get_card("京B00001")["expired"] is True
+    assert api.get_card("京A12345")["expired"] is False

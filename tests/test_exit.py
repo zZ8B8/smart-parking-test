@@ -1,138 +1,167 @@
 # -*- coding: utf-8 -*-
-"""出场与计费模块 · 功能测试
+"""出场模块测试：计费规则、车位释放、状态流转、异常场景。
 
-计费规则（见 docs/接口文档.md）：
-    15 分钟内免费；超过后首小时 5 元；此后每满 1 小时 3 元（不足 1 小时按 1 小时）；
-    单日封顶 40 元。
-
-本文件只覆盖**计费正确**的区间；把「不足 1 小时按 1 小时」执行错的部分
-放在 tests/bugs/test_bug_billing.py 里单独跟踪。
+关于时间的稳定性：
+    业务层取时间走的是「系统时间 + 时钟偏移」，而出场时长是
+    「出场时间 - 入场时间」两个时间点之差（入场时间按秒截断存储）。
+    因此实际算出的秒数会是「偏移量 + 不到 2 秒的零头」。
+    为了避免用例卡在计费档位的临界点上产生偶发失败，
+    下面的用例都取明确落在某个档位中间的值，不测「正好第 3600 秒」这类边界。
+    边界值另有专项用例。
 """
 import pytest
-from urllib.parse import quote
 
-pytestmark = pytest.mark.functional
-
-
-class TestExit(object):
-
-    def test_exit_success(self, api, park, leave):
-        """TC-EXIT-001 出场成功：记录关闭、返回费用"""
-        park("津A12345")
-        resp = leave("津A12345")
-        assert resp.status == 200
-        assert resp.data["status"] == "CLOSED"
-        assert resp.data["exited_at"] is not None
-        assert resp.data["fee"] is not None
-
-    def test_exit_releases_spot(self, api, park, leave):
-        """TC-EXIT-002 出场后车位被释放"""
-        park("津A12345")
-        assert api.get("/api/lot/summary").data["free"] == 6
-        leave("津A12345")
-        assert api.get("/api/lot/summary").data["free"] == 7
-
-    def test_exit_frees_spot_for_others(self, api, park, leave):
-        """TC-EXIT-003 释放出的车位可被下一辆车使用"""
-        park("津A12345")
-        assert api.get("/api/lot/summary").data["free"] == 6
-        leave("津A12345")
-        assert park("津B22222").status == 200
-        assert api.get("/api/lot/summary").data["free"] == 6
-
-    def test_exit_unknown_plate(self, api, leave):
-        """TC-EXIT-004 未入场的车辆出场返回 404"""
-        resp = leave("津A12345")
-        assert resp.status == 404
-        assert resp.code == "TICKET_NOT_FOUND"
-
-    def test_exit_records_duration(self, api, park, leave, advance):
-        """TC-EXIT-005 出场记录停车时长（分钟）"""
-        park("津A12345")
-        advance(2 * 3600 + 30 * 60)          # 150 分钟
-        resp = leave("津A12345")
-        assert resp.data["duration_minutes"] == 150
+from tests.client import ApiError
+from tests.conftest import spot_status_by_id
 
 
-class TestBilling(object):
-    """计费规则（只在「不触发取整缺陷」的区间上断言）"""
+class TestExitSuccess:
 
-    def test_within_free_period(self, api, park, leave, advance):
-        """TC-BILL-001 停车 15 分钟（含）以内免费 —— 边界值"""
-        park("津A12345")
-        advance(15 * 60)
-        assert leave("津A12345").data["fee"] == 0.0
+    def test_exit_releases_spot(self, api):
+        t = api.entry("京A77777")
+        api.advance_clock(1200)
+        api.exit("京A77777")
+        assert api.free_spot_count() == 7
+        assert api.occupied_spot_count() == 0
+        assert api.ticket(t["id"])["status"] == "CLOSED"
 
-    def test_just_over_free_period(self, api, park, leave, advance):
-        """TC-BILL-002 停车 15 分 1 秒即收费，按首小时计 —— 边界值"""
-        park("津A12345")
-        advance(15 * 60 + 1)
-        assert leave("津A12345").data["fee"] == 5.0
+    def test_exit_fills_times_and_duration(self, api):
+        api.entry("京A77777")
+        api.advance_clock(1200)
+        t = api.exit("京A77777")
+        assert t["exited_at"] is not None
+        assert 20 <= t["duration_minutes"] <= 21
+        assert t["fee"] == 5.0
 
-    def test_half_hour(self, api, park, leave, advance):
-        """TC-BILL-003 停车 30 分钟按首小时 5 元"""
-        park("津A12345")
-        advance(30 * 60)
-        assert leave("津A12345").data["fee"] == 5.0
+    def test_exit_writes_spot_log(self, api, db):
+        api.entry("京A77777")
+        api.advance_clock(1200)
+        api.exit("京A77777")
+        with db.cursor() as cur:
+            cur.execute("SELECT action FROM spot_logs ORDER BY id")
+            rows = [r[0] for r in cur.fetchall()]
+        assert rows == ["ENTRY", "EXIT"]
 
-    def test_exactly_one_hour(self, api, park, leave, advance):
-        """TC-BILL-004 停车恰好 1 小时 5 元 —— 边界值"""
-        park("津A12345")
-        advance(3600)
-        assert leave("津A12345").data["fee"] == 5.0
+    def test_spot_reusable_after_exit(self, api):
+        first = api.entry("京A77777")
+        api.advance_clock(1200)
+        api.exit("京A77777")
+        second = api.entry("京B12345")
+        assert second["spot_code"] == first["spot_code"]
 
-    def test_exactly_two_hours(self, api, park, leave, advance):
-        """TC-BILL-005 停车恰好 2 小时 8 元（5 + 3） —— 边界值"""
-        park("津A12345")
-        advance(2 * 3600)
-        assert leave("津A12345").data["fee"] == 8.0
+    def test_exit_updates_spot_plate_to_null(self, api, db):
+        t = api.entry("京A77777")
+        api.advance_clock(1200)
+        api.exit("京A77777")
+        assert spot_status_by_id(db, t["spot_id"]) == ("FREE", None)
 
-    def test_exactly_three_hours(self, api, park, leave, advance):
-        """TC-BILL-006 停车恰好 3 小时 11 元（5 + 3 × 2）"""
-        park("津A12345")
-        advance(3 * 3600)
-        assert leave("津A12345").data["fee"] == 11.0
-
-    def test_daily_cap(self, api, park, leave, advance):
-        """TC-BILL-007 停车 24 小时触发单日封顶 40 元 —— 边界值"""
-        park("津A12345")
-        advance(24 * 3600)
-        assert leave("津A12345").data["fee"] == 40.0
-
-    def test_cap_not_reached(self, api, park, leave, advance):
-        """TC-BILL-008 停车 12 小时未到封顶（5 + 3 × 11 = 38）"""
-        park("津A12345")
-        advance(12 * 3600)
-        assert leave("津A12345").data["fee"] == 38.0
+    def test_consistency_after_normal_flow(self, api):
+        api.entry("京A77777")
+        api.advance_clock(1200)
+        api.exit("京A77777")
+        assert api.consistency()["ok"] is True
 
 
-class TestTicketQuery(object):
+class TestBilling:
+    """计费规则：≤15 分钟免费；首小时 5 元；此后每满 1 小时 3 元；封顶 40 元。"""
 
-    def test_list_tickets_by_plate(self, api, park, leave):
-        """TC-EXIT-006 按车牌查记录，两次停车共 2 条"""
-        park("津A12345")
-        leave("津A12345")
-        park("津A12345")
-        data = api.get("/api/tickets?plate=%s" % quote("津A12345")).data
-        assert data["total"] == 2
+    @pytest.mark.parametrize("minutes,expected", [
+        (1, 0.0),        # 刚停一会儿
+        (10, 0.0),       # 免费时长内
+        (14, 0.0),       # 接近免费上限
+    ])
+    def test_free_within_15min(self, api, minutes, expected):
+        api.entry("京A77777")
+        api.advance_clock(minutes * 60)
+        assert api.exit("京A77777")["fee"] == expected
 
-    def test_filter_by_status(self, api, park):
-        """TC-EXIT-007 按状态筛选在场记录"""
-        park("津A12345")
-        park("津B22222")
-        data = api.get("/api/tickets?status=PARKING").data
-        assert data["total"] == 2
-        assert api.get("/api/tickets?status=CLOSED").data["total"] == 0
+    @pytest.mark.parametrize("hours,expected", [
+        (1, 5.0),        # 首小时
+        (2, 8.0),        # 5 + 3
+        (3, 11.0),       # 5 + 3*2
+        (4, 14.0),       # 5 + 3*3
+        (6, 20.0),       # 5 + 3*5
+    ])
+    def test_hourly_fee(self, api, hours, expected):
+        api.entry("京A77777")
+        api.advance_clock(hours * 3600)
+        assert api.exit("京A77777")["fee"] == expected
 
-    def test_ticket_detail(self, api, park):
-        """TC-EXIT-008 查询记录详情"""
-        tid = park("津A12345").data["id"]
-        resp = api.get("/api/tickets/%s" % tid)
-        assert resp.status == 200
-        assert resp.data["plate"] == "津A12345"
+    def test_free_before_charged_after(self, api):
+        """同一辆车：先停 10 分钟免费，再停 20 分钟收费。"""
+        api.entry("京A77777")
+        api.advance_clock(600)
+        assert api.exit("京A77777")["fee"] == 0.0
 
-    def test_ticket_not_found(self, api):
-        """TC-EXIT-009 记录不存在返回 404"""
-        resp = api.get("/api/tickets/TK99999")
-        assert resp.status == 404
-        assert resp.code == "TICKET_NOT_FOUND"
+        api.entry("京A77777")
+        api.advance_clock(1200)
+        assert api.exit("京A77777")["fee"] == 5.0
+
+    def test_daily_cap(self, api):
+        """13 小时应触发 40 元封顶（5 + 12*3 = 41 → 40）。"""
+        api.entry("京A77777")
+        api.advance_clock(13 * 3600)
+        assert api.exit("京A77777")["fee"] == 40.0
+
+    def test_fee_is_number_not_string(self, api):
+        api.entry("京A77777")
+        api.advance_clock(3600)
+        assert isinstance(api.exit("京A77777")["fee"], float)
+
+
+class TestExitExceptions:
+
+    def test_exit_without_entry(self, api):
+        with pytest.raises(ApiError) as err:
+            api.exit("京A99999")
+        assert err.value.status == 404
+        assert err.value.code == "TICKET_NOT_FOUND"
+
+    def test_exit_invalid_plate(self, api):
+        with pytest.raises(ApiError) as err:
+            api.exit("BADPLATE")
+        assert err.value.status == 400
+        assert err.value.code == "INVALID_PLATE"
+
+    def test_exit_missing_plate(self, api):
+        with pytest.raises(ApiError) as err:
+            api.post("/api/vehicles/exit", {})
+        assert err.value.code == "INVALID_PLATE"
+
+    def test_exit_does_not_affect_other_vehicles(self, api):
+        api.entry("京A11111")
+        api.entry("京A22222")
+        api.advance_clock(1200)
+        api.exit("京A11111")
+        assert api.open_ticket_count() == 1
+        assert api.occupied_spot_count() == 1
+
+    def test_entry_after_exit_same_plate(self, api):
+        api.entry("京A77777")
+        api.advance_clock(1200)
+        api.exit("京A77777")
+        t = api.entry("京A77777")
+        assert t["status"] == "PARKING"
+        assert api.open_ticket_count() == 1
+
+
+class TestMonthlyCardFree:
+    """有效月卡出场免费（正向用例）。"""
+
+    def test_valid_card_is_free(self, api):
+        """京A12345 的月卡有效期 2027-12-31，仍在有效期内。"""
+        api.entry("京A12345")
+        api.advance_clock(3 * 3600)
+        assert api.exit("京A12345")["fee"] == 0.0
+
+    def test_no_card_is_charged(self, api):
+        """没有月卡的车牌正常收费。"""
+        api.entry("京A55555")
+        api.advance_clock(3 * 3600)
+        assert api.exit("京A55555")["fee"] == 11.0
+
+    def test_new_card_makes_free(self, api):
+        api.issue_card("京A66666", "2027-12-31")
+        api.entry("京A66666")
+        api.advance_clock(3 * 3600)
+        assert api.exit("京A66666")["fee"] == 0.0

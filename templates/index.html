@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}车场总览 · 智能停车管理系统{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>车场总览</h1>
+  <p>实时查看车位占用情况。车位总数刻意设置得很小（共 7 个，其中充电车位仅 1 个），方便观察边界与并发行为。</p>
+</div>
+
+<div class="stat-row">
+  <div class="stat total">
+    <div class="label">车位总数</div>
+    <div class="value" id="s-total">—<span class="unit">个</span></div>
+  </div>
+  <div class="stat free">
+    <div class="label">空闲车位</div>
+    <div class="value" id="s-free">—<span class="unit">个</span></div>
+  </div>
+  <div class="stat busy">
+    <div class="label">已占用</div>
+    <div class="value" id="s-busy">—<span class="unit">个</span></div>
+  </div>
+  <div class="stat rate">
+    <div class="label">占用率</div>
+    <div class="value" id="s-rate">—</div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card" id="grid-card">
+    <h3 class="card-title">车位实时状态</h3>
+    <p class="hint">加载中…</p>
+  </div>
+
+  <div>
+    <div class="card">
+      <h3 class="card-title">按类型统计</h3>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr><th>类型</th><th class="num">总数</th><th class="num">空闲</th><th class="num">占用</th></tr>
+          </thead>
+          <tbody id="bytype-body">
+            <tr><td colspan="4" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">数据一致性自检 <span class="sub">反向校验车场数据是否自洽</span></h3>
+      <p class="hint" style="margin-top:-6px">
+        校验三条不变量：占用车位数 = 在场记录数；占用车位都有对应在场记录；车位流水收支平衡。
+        任何一条不成立，都说明存在并发或状态机缺陷。
+      </p>
+      <div class="btn-row">
+        <button class="btn btn-ghost btn-sm" id="btn-check">执行自检</button>
+      </div>
+      <div id="check-result" style="margin-top:12px"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+PK.init("index");
+
+function renderSummary(d) {
+  document.getElementById("s-total").innerHTML = d.total + '<span class="unit">个</span>';
+  document.getElementById("s-free").innerHTML = d.free + '<span class="unit">个</span>';
+  document.getElementById("s-busy").innerHTML = d.occupied + '<span class="unit">个</span>';
+  var rate = d.total ? Math.round(d.occupied / d.total * 100) : 0;
+  document.getElementById("s-rate").innerHTML = rate + '<span class="unit">%</span>';
+}
+
+function renderGrid(spots) {
+  var zones = {};
+  spots.forEach(function (s) {
+    var zone = s.code.split("-")[0];
+    (zones[zone] = zones[zone] || []).push(s);
+  });
+
+  var html = '<div class="legend">' +
+    '<span><i class="free"></i>空闲</span>' +
+    '<span><i class="busy"></i>已占用</span>' +
+    '<span class="hint">鼠标悬停可看车牌</span></div>';
+
+  Object.keys(zones).sort().forEach(function (zone) {
+    var list = zones[zone];
+    var freeN = list.filter(function (s) { return s.status === "FREE"; }).length;
+    var typeText = PK.spotTypeText(list[0].type);
+    html += '<div class="zone">';
+    html += '<div class="zone-head">' + zone + " 区" +
+            '<span class="tag">' + typeText + "</span>" +
+            '<span class="hint">空闲 ' + freeN + " / " + list.length + "</span></div>";
+    html += '<div class="spots-grid">';
+    list.forEach(function (s) {
+      var cls = s.status === "FREE" ? "free" : "occupied";
+      var title = s.code + " " + s.status + (s.plate ? " " + s.plate : "");
+      html += '<div class="spot ' + cls + '" title="' + PK.esc(title) + '">' +
+        '<div class="code">' + PK.esc(s.code) + "</div>" +
+        '<div class="meta">' + PK.esc(PK.spotTypeText(s.type)) + "</div>";
+      if (s.plate) {
+        html += '<div class="who">' + PK.esc(s.plate) + "</div>";
+      }
+      html += "</div>";
+    });
+    html += "</div></div>";
+  });
+
+  document.getElementById("grid-card").innerHTML =
+    '<h3 class="card-title">车位实时状态 <span class="sub">每 5 秒自动刷新</span></h3>' + html;
+}
+
+function renderByType(byType) {
+  var rows = "";
+  Object.keys(byType).forEach(function (t) {
+    var v = byType[t];
+    rows += "<tr><td>" + PK.esc(PK.spotTypeText(t)) + "</td>" +
+      '<td class="num">' + v.total + "</td>" +
+      '<td class="num" style="color:#10b981">' + v.free + "</td>" +
+      '<td class="num" style="color:#ef4444">' + v.occupied + "</td></tr>";
+  });
+  document.getElementById("bytype-body").innerHTML = rows ||
+    '<tr><td colspan="4" class="empty">暂无数据</td></tr>';
+}
+
+function loadAll() {
+  PK.get("/api/lot/summary").then(function (d) {
+    renderSummary(d);
+    renderByType(d.byType);
+  }).catch(function (e) { PK.alert(e.message, "error"); });
+
+  PK.get("/api/spots").then(function (d) {
+    renderGrid(d.items);
+  }).catch(function (e) { PK.alert(e.message, "error"); });
+}
+
+/* ---- 一致性自检 ---- */
+function runCheck() {
+  PK.get("/api/consistency").then(function (d) {
+    var box = document.getElementById("check-result");
+    if (d.ok) {
+      box.innerHTML = '<div class="alert alert-ok">数据自洽：三条不变量全部通过。</div>';
+      return;
+    }
+    var html = '<div class="alert alert-error">发现 ' + d.problems.length + " 处数据不一致：</div>" +
+      '<div class="table-wrap"><table class="data"><thead><tr><th>校验项</th><th>说明</th></tr></thead><tbody>';
+    d.problems.forEach(function (p) {
+      html += '<tr><td class="mono">' + PK.esc(p.rule) + "</td><td>" + PK.esc(p.detail) + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    box.innerHTML = html;
+  }).catch(function (e) { PK.alert(e.message, "error"); });
+}
+
+document.getElementById("btn-check").onclick = runCheck;
+
+PK.onClockChanged = loadAll;
+loadAll();
+window.setInterval(loadAll, 5000);
+</script>
+{% endblock %}

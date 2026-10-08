@@ -1,34 +1,46 @@
 # -*- coding: utf-8 -*-
-"""缺陷复现 · 并发入场导致车位超发
+"""BUG-S3 · 并发入场超卖（一个车位发给多辆车）
 
-BUG-S3 entry 中「查找空闲车位」与「占用车位」分两步执行，中间没有加锁，
-        多个请求同时入场时会查到同一个空闲车位，导致一个车位被分配给多辆车
-        —— 入场记录数远超车位数。
+需求：任意数量的并发入场请求，成功数不得超过空闲车位数，且
+「占用车位数」必须始终等于「在场记录数」。
+
+实际：service.entry() 把「查空闲车位」和「占用车位」拆成了两次无保护的数据库操作。
+并发请求在两次操作之间的窗口里查到**同一个**空闲车位，
+于是同一车位被分配给多辆车 —— 车位超卖。
+
+复现要点：
+    · 用 threading.Barrier 让所有请求在同一时刻起跑；
+    · 用 wide_race_window 夹具把「查车位 → 占车位」的延迟放大到 0.3 秒，
+      保证所有请求都在写入之前完成查询（真实系统中这段时间来自网络与调度）。
 """
 import threading
 
 import pytest
 
-pytestmark = pytest.mark.known_bug
+from tests.client import ApiError
 
-RACERS = 12          # 并发车辆数
-PLATES = ["津A%05d" % i for i in range(RACERS)]
+WORKERS = 20          # 20 辆车同时冲进来
+TOTAL_SPOTS = 7       # 车场只有 7 个车位
 
 
-def _entry_concurrently(api, spot_type):
-    """让 RACERS 辆车对齐后同时请求入场，返回所有响应。"""
+def _fire_entry_concurrently(api, workers=WORKERS):
+    """让 workers 个线程同时入场，返回 [(结果, 车牌), ...]。"""
+    barrier = threading.Barrier(workers)
     results = []
     lock = threading.Lock()
-    barrier = threading.Barrier(RACERS)
 
-    def do_entry(plate):
-        barrier.wait()
-        resp = api.post("/api/vehicles/entry",
-                        {"plate": plate, "spotType": spot_type})
+    def worker(idx):
+        plate = "京A9%04d" % idx      # 京A90000 / 京A90001 ...
+        barrier.wait()                # 等一下，大家一起冲
+        try:
+            api.entry(plate)
+            outcome = "ok"
+        except ApiError as exc:
+            outcome = exc.code
         with lock:
-            results.append(resp)
+            results.append((outcome, plate))
 
-    threads = [threading.Thread(target=do_entry, args=(p,)) for p in PLATES]
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(workers)]
     for t in threads:
         t.start()
     for t in threads:
@@ -36,60 +48,41 @@ def _entry_concurrently(api, spot_type):
     return results
 
 
-@pytest.mark.xfail(reason="BUG-S3 车位查找与占用非原子操作", strict=False)
-def test_bug_s3_charging_spot_should_not_oversell(api):
-    """BUG-S3 只有 1 个充电车位时，并发入场最多只能成功 1 辆。
+@pytest.mark.xfail(reason="BUG-S3 并发入场：查车位与占车位非原子，一个车位发给多辆车", strict=True)
+def test_concurrent_entry_should_not_overbook(api, wide_race_window):
+    """20 辆车同时入场，最多只能成功 7 辆（车位数）。"""
+    results = _fire_entry_concurrently(api)
+    ok = [r for r in results if r[0] == "ok"]
+    assert len(ok) <= TOTAL_SPOTS, (
+        "车场只有 %d 个车位，却有 %d 辆车入场成功" % (TOTAL_SPOTS, len(ok)))
 
-    场景：充电车位仅 1 个，12 辆车同时请求充电车位。
-    期望：最多 1 辆入场成功，其余返回 409（车位已满）
-    实际：12 辆全部成功，且都拿到同一个车位 C-001
+
+@pytest.mark.xfail(reason="BUG-S3 并发入场导致占用车位数与在场记录数不一致", strict=True)
+def test_concurrent_entry_should_keep_counts_equal(api, wide_race_window):
+    """并发入场后，占用车位数必须等于在场记录数。"""
+    _fire_entry_concurrently(api)
+    assert api.occupied_spot_count() == api.open_ticket_count()
+
+
+@pytest.mark.xfail(reason="BUG-S3 并发入场后车场数据自洽性被破坏", strict=True)
+def test_concurrent_entry_should_stay_consistent(api, wide_race_window):
+    """并发入场后，一致性自检应当通过。"""
+    _fire_entry_concurrently(api)
+    d = api.consistency()
+    assert d["ok"] is True, d["problems"]
+
+
+def test_sequential_entries_respect_capacity(api):
+    """对照用例：**串行**入场时容量控制是正确的 —— 第 8 辆会被拒绝。
+
+    这条不加 xfail，用来证明缺陷是「并发」引入的，
+    而不是容量判断逻辑本身写错了。做缺陷定位时这种对照很有用。
     """
-    results = _entry_concurrently(api, "CHARGING")
+    for i in range(TOTAL_SPOTS):
+        api.entry("京A8%04d" % i)
 
-    succeeded = [r for r in results if r.status == 200]
-    assert len(succeeded) <= 1, \
-        "充电车位只有 1 个，却成功入场 %d 辆" % len(succeeded)
-
-
-@pytest.mark.xfail(reason="BUG-S3 同一车位被分配给多辆车", strict=False)
-def test_bug_s3_one_spot_should_not_be_shared(api):
-    """BUG-S3 同一个车位不应被分配给多辆车。
-
-    期望：成功入场的车辆占用的车位互不相同
-    实际：多辆车拿到同一个 spot_code
-    """
-    results = _entry_concurrently(api, "CHARGING")
-    succeeded = [r for r in results if r.status == 200]
-
-    codes = [r.data["spot_code"] for r in succeeded]
-    assert len(set(codes)) == len(codes), \
-        "同一车位 %s 被分配给了 %d 辆车" % (codes[0] if codes else "-", len(codes))
-
-
-@pytest.mark.xfail(reason="BUG-S3 在场记录数超过车位总数", strict=False)
-def test_bug_s3_parking_count_should_not_exceed_capacity(api):
-    """BUG-S3 在场车辆数不应超过车位数。
-
-    场景：全部 7 个车位，10 辆车同时入场。
-    期望：在场记录 ≤ 7
-    实际：超过 7 条
-    """
-    plates = ["津B%05d" % i for i in range(10)]
-    results = []
-    lock = threading.Lock()
-    barrier = threading.Barrier(len(plates))
-
-    def do_entry(plate):
-        barrier.wait()
-        resp = api.post("/api/vehicles/entry", {"plate": plate})
-        with lock:
-            results.append(resp)
-
-    threads = [threading.Thread(target=do_entry, args=(p,)) for p in plates]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    parking = api.get("/api/tickets?status=PARKING").data["total"]
-    assert parking <= 7, "车位总数 7，在场车辆却有 %d 辆" % parking
+    with pytest.raises(ApiError) as err:
+        api.entry("京A89999")
+    assert err.value.code == "LOT_FULL"
+    assert api.occupied_spot_count() == TOTAL_SPOTS
+    assert api.consistency()["ok"] is True

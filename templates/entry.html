@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}入场登记 · 智能停车管理系统{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>入场登记</h1>
+  <p>输入车牌后系统自动分配一个空闲车位。若无可用车位则拒绝入场（HTTP 409）。</p>
+</div>
+
+<div class="notice">
+  <b>车牌格式</b>：首位为省份简称，第二位字母，其后 5~6 位字母或数字。例如
+  <span class="mono">京A12345</span>、<span class="mono">粤B8888E</span>。
+</div>
+
+<div class="card">
+  <div id="clock-holder"></div>
+
+  <div class="form-inline">
+    <div class="form-row">
+      <label>车牌号 <span class="tip">必填</span></label>
+      <input type="text" id="plate" placeholder="例如 京A12345" autocomplete="off">
+    </div>
+    <div class="form-row" style="max-width:190px">
+      <label>车位类型 <span class="tip">可选</span></label>
+      <select id="spotType">
+        <option value="">不限（自动分配）</option>
+        <option value="NORMAL">普通车位</option>
+        <option value="ACCESSIBLE">无障碍车位</option>
+        <option value="CHARGING">充电车位（仅 1 个）</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" id="btn-entry">确认入场</button>
+    <button class="btn btn-ghost" id="btn-random">随机车牌</button>
+  </div>
+</div>
+
+<div id="result"></div>
+
+<div class="card">
+  <h3 class="card-title">在场车辆</h3>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>记录号</th><th>车牌</th><th>车位</th>
+          <th>入场时间</th><th>状态</th>
+        </tr>
+      </thead>
+      <tbody id="parking-body">
+        <tr><td colspan="5" class="empty">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+PK.init("entry");
+document.getElementById("clock-holder").innerHTML = PK.clockControls();
+PK.bindClockControls();
+
+function randomPlate() {
+  var prov = "京津冀沪粤苏浙鲁豫川湘鄂闽皖";
+  var letter = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  var chars = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  var p = prov[Math.floor(Math.random() * prov.length)];
+  p += letter[Math.floor(Math.random() * letter.length)];
+  for (var i = 0; i < 5; i++) p += chars[Math.floor(Math.random() * chars.length)];
+  return p;
+}
+
+document.getElementById("btn-random").onclick = function () {
+  document.getElementById("plate").value = randomPlate();
+};
+
+function showTicket(t, title, cls) {
+  var html = '<div class="card"><h3 class="card-title">' + PK.esc(title) + '</h3>' +
+    '<div class="result-panel"><dl class="kv">' +
+    "<dt>记录号</dt><dd>" + PK.esc(t.id) + "</dd>" +
+    "<dt>车牌</dt><dd>" + PK.plateChip(t.plate) + "</dd>" +
+    "<dt>分配车位</dt><dd>" + PK.esc(t.spot_code || t.spot_id) +
+      "（" + PK.esc(PK.spotTypeText(t.spot_type || "")) + "）</dd>" +
+    "<dt>入场时间</dt><dd>" + PK.esc(t.entered_at) + "</dd>" +
+    "<dt>状态</dt><dd>" + PK.ticketBadge(t.status) + "</dd>" +
+    "</dl></div></div>";
+  document.getElementById("result").innerHTML = html;
+  PK.alert(title, cls || "ok");
+}
+
+document.getElementById("btn-entry").onclick = function () {
+  var plate = document.getElementById("plate").value.trim();
+  var spotType = document.getElementById("spotType").value || null;
+  if (!plate) { PK.alert("请先输入车牌号", "error"); return; }
+
+  var btn = this;
+  btn.disabled = true;
+  PK.post("/api/vehicles/entry", { plate: plate, spotType: spotType })
+    .then(function (t) {
+      showTicket(t, "入场成功");
+      document.getElementById("plate").value = "";
+      loadParking();
+    })
+    .catch(function (e) {
+      document.getElementById("result").innerHTML = "";
+      PK.alert(e.message + "（" + (e.code || e.status) + "）", "error");
+    })
+    .finally(function () { btn.disabled = false; });
+};
+
+function loadParking() {
+  PK.get("/api/tickets?status=PARKING").then(function (d) {
+    var rows = "";
+    d.items.forEach(function (t) {
+      rows += "<tr>" +
+        "<td>" + PK.esc(t.id) + "</td>" +
+        "<td>" + PK.plateChip(t.plate) + "</td>" +
+        "<td>" + PK.esc(t.spot_code) + "</td>" +
+        "<td>" + PK.esc(t.entered_at) + "</td>" +
+        "<td>" + PK.ticketBadge(t.status) + "</td>" +
+        "</tr>";
+    });
+    document.getElementById("parking-body").innerHTML = rows ||
+      '<tr><td colspan="5" class="empty">当前没有在场车辆</td></tr>';
+  }).catch(function (e) { PK.alert(e.message, "error"); });
+}
+
+PK.onClockChanged = loadParking;
+loadParking();
+</script>
+{% endblock %}

@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}停车记录 · 智能停车管理系统{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>停车记录</h1>
+  <p>全部停车记录，可按车牌与状态筛选。已出场的记录会显示时长与费用。</p>
+</div>
+
+<div class="card">
+  <div class="form-inline">
+    <div class="form-row">
+      <label>车牌 <span class="tip">模糊匹配</span></label>
+      <input type="text" id="f-plate" placeholder="全部" autocomplete="off">
+    </div>
+    <div class="form-row" style="max-width:180px">
+      <label>状态</label>
+      <select id="f-status">
+        <option value="">全部</option>
+        <option value="PARKING">在场</option>
+        <option value="CLOSED">已出场</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" id="btn-search">查询</button>
+    <button class="btn btn-ghost" id="btn-clear">清空条件</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="card-title">记录列表 <span class="sub" id="count-sub">—</span></h3>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>记录号</th><th>车牌</th><th>车位</th>
+          <th>入场时间</th><th>出场时间</th>
+          <th class="num">时长</th><th class="num">费用</th><th>状态</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="8" class="empty">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+PK.init("tickets");
+
+function durationText(minutes) {
+  if (minutes === null || minutes === undefined) return "—";
+  var h = Math.floor(minutes / 60);
+  var m = minutes % 60;
+  if (h > 0) return h + " 小时 " + m + " 分";
+  return m + " 分钟";
+}
+
+function load() {
+  var params = [];
+  var plate = document.getElementById("f-plate").value.trim();
+  var status = document.getElementById("f-status").value;
+  if (plate) params.push("plate=" + encodeURIComponent(plate));
+  if (status) params.push("status=" + encodeURIComponent(status));
+  var url = "/api/tickets" + (params.length ? "?" + params.join("&") : "");
+
+  PK.get(url).then(function (d) {
+    document.getElementById("count-sub").textContent = "共 " + d.total + " 条";
+    var rows = "";
+    d.items.forEach(function (t) {
+      rows += "<tr>" +
+        "<td>" + PK.esc(t.id) + "</td>" +
+        "<td>" + PK.plateChip(t.plate) + "</td>" +
+        "<td>" + PK.esc(t.spot_code) + "</td>" +
+        "<td>" + PK.esc(t.entered_at) + "</td>" +
+        "<td>" + PK.esc(t.exited_at || "—") + "</td>" +
+        '<td class="num">' + PK.esc(durationText(t.duration_minutes)) + "</td>" +
+        '<td class="num">' + (t.fee === null ? "—" : PK.money(t.fee)) + "</td>" +
+        "<td>" + PK.ticketBadge(t.status) + "</td>" +
+        "</tr>";
+    });
+    document.getElementById("rows").innerHTML = rows ||
+      '<tr><td colspan="8" class="empty">没有符合条件的记录</td></tr>';
+  }).catch(function (e) { PK.alert(e.message, "error"); });
+}
+
+document.getElementById("btn-search").onclick = load;
+document.getElementById("btn-clear").onclick = function () {
+  document.getElementById("f-plate").value = "";
+  document.getElementById("f-status").value = "";
+  load();
+};
+document.getElementById("f-plate").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") load();
+});
+
+load();
+</script>
+{% endblock %}

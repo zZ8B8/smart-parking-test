@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}月卡管理 · 智能停车管理系统{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>月卡管理</h1>
+  <p>办理或续办月卡。持有<b>有效期内</b>月卡的车牌出场时免费。</p>
+</div>
+
+<div class="notice">
+  <b>测试观察点</b>：初始数据里有两张月卡 ——
+  <span class="mono">京A12345</span>（有效期 2027-12-31，有效）与
+  <span class="mono">京B00001</span>（有效期 2024-01-01，<b>已过期</b>）。
+  分别让这两辆车入场再出场，观察费用是否有差异。
+</div>
+
+<div class="card">
+  <h3 class="card-title">办理 / 续办月卡</h3>
+  <div class="form-inline">
+    <div class="form-row">
+      <label>车牌号</label>
+      <input type="text" id="plate" placeholder="例如 京A12345" autocomplete="off">
+    </div>
+    <div class="form-row" style="max-width:200px">
+      <label>有效期至</label>
+      <input type="date" id="validUntil">
+    </div>
+    <button class="btn btn-primary" id="btn-issue">提交</button>
+    <button class="btn btn-ghost" id="btn-expired">填一个已过期日期</button>
+  </div>
+</div>
+
+<div id="result"></div>
+
+<div class="card">
+  <h3 class="card-title">月卡列表 <span class="sub" id="count-sub">—</span></h3>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th>车牌</th><th>有效期至</th><th>办理时间</th><th>状态</th></tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="4" class="empty">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+PK.init("card");
+
+document.getElementById("btn-expired").onclick = function () {
+  var d = new Date();
+  d.setFullYear(d.getFullYear() - 1);
+  document.getElementById("validUntil").value = d.toISOString().slice(0, 10);
+};
+
+document.getElementById("btn-issue").onclick = function () {
+  var plate = document.getElementById("plate").value.trim();
+  var validUntil = document.getElementById("validUntil").value;
+  if (!plate) { PK.alert("请先输入车牌号", "error"); return; }
+  if (!validUntil) { PK.alert("请选择有效期", "error"); return; }
+
+  var btn = this;
+  btn.disabled = true;
+  PK.post("/api/cards", { plate: plate, validUntil: validUntil })
+    .then(function (c) {
+      document.getElementById("result").innerHTML =
+        '<div class="card"><h3 class="card-title">办理成功</h3><div class="result-panel"><dl class="kv">' +
+        "<dt>车牌</dt><dd>" + PK.plateChip(c.plate) + "</dd>" +
+        "<dt>有效期至</dt><dd>" + PK.esc(c.valid_until) + "</dd>" +
+        "<dt>办理时间</dt><dd>" + PK.esc(c.issued_at) + "</dd>" +
+        "<dt>状态</dt><dd>" +
+          (c.expired ? '<span class="badge badge-red">已过期</span>'
+                     : '<span class="badge badge-green">有效</span>') +
+        "</dd></dl></div></div>";
+      PK.alert("月卡已办理", "ok");
+      document.getElementById("plate").value = "";
+      load();
+    })
+    .catch(function (e) {
+      document.getElementById("result").innerHTML = "";
+      PK.alert(e.message + "（" + (e.code || e.status) + "）", "error");
+    })
+    .finally(function () { btn.disabled = false; });
+};
+
+function load() {
+  PK.get("/api/cards").then(function (d) {
+    document.getElementById("count-sub").textContent = "共 " + d.total + " 张";
+    var rows = "";
+    d.items.forEach(function (c) {
+      rows += "<tr>" +
+        "<td>" + PK.plateChip(c.plate) + "</td>" +
+        "<td>" + PK.esc(c.valid_until) + "</td>" +
+        "<td>" + PK.esc(c.issued_at) + "</td>" +
+        "<td>" + (c.expired
+          ? '<span class="badge badge-red">已过期</span>'
+          : '<span class="badge badge-green">有效</span>') + "</td>" +
+        "</tr>";
+    });
+    document.getElementById("rows").innerHTML = rows ||
+      '<tr><td colspan="4" class="empty">暂无月卡</td></tr>';
+  }).catch(function (e) { PK.alert(e.message, "error"); });
+}
+
+load();
+</script>
+{% endblock %}

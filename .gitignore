@@ -1,19 +1,37 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
 *.egg-info/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# 测试与覆盖率
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
-.venv/
-venv/
+.cache
+coverage.xml
 
 # IDE
 .idea/
 .vscode/
+.vs/
 *.swp
-.DS_Store
+*.swo
+*~
 
-# 运行产物
+# 日志与临时文件
 *.log
-tools/_out/
+*.tmp
+_tmp/

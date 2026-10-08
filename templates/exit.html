@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}出场结算 · 智能停车管理系统{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>出场结算</h1>
+  <p>车辆出场时结算费用、关闭停车记录、释放车位。持有有效月卡的车牌免费。</p>
+</div>
+
+<div class="card">
+  <div id="clock-holder"></div>
+
+  <div class="form-inline">
+    <div class="form-row">
+      <label>车牌号 <span class="tip">必填</span></label>
+      <input type="text" id="plate" placeholder="例如 京A12345" autocomplete="off">
+    </div>
+    <button class="btn btn-danger" id="btn-exit">结算并出场</button>
+    <button class="btn btn-ghost" id="btn-fill">填入在场车牌</button>
+  </div>
+</div>
+
+<div id="result"></div>
+
+<div class="grid-2">
+  <div class="card">
+    <h3 class="card-title">计费规则</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>条件</th><th>费用</th></tr></thead>
+        <tbody>
+          <tr><td>停车 ≤ 15 分钟</td><td>免费</td></tr>
+          <tr><td>首小时（不足 1 小时按 1 小时）</td><td>¥5.00</td></tr>
+          <tr><td>此后每满 1 小时（不足 1 小时按 1 小时）</td><td>¥3.00 / 小时</td></tr>
+          <tr><td>单日封顶</td><td>¥40.00</td></tr>
+          <tr><td>持有<b>有效</b>月卡</td><td>免费</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="hint" style="margin-top:10px">
+      参考：停车 20 分钟应收 ¥5；1 小时 10 分应收 ¥8；2 小时应收 ¥8；3 小时 5 分应收 ¥14。
+    </p>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">在场车辆 <span class="sub">点车牌可快速填入</span></h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>车牌</th><th>车位</th><th>入场时间</th></tr></thead>
+        <tbody id="parking-body">
+          <tr><td colspan="3" class="empty">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+PK.init("exit");
+document.getElementById("clock-holder").innerHTML = PK.clockControls();
+PK.bindClockControls();
+
+document.getElementById("btn-fill").onclick = function () {
+  PK.get("/api/tickets?status=PARKING").then(function (d) {
+    if (!d.items.length) { PK.alert("当前没有在场车辆", "error"); return; }
+    document.getElementById("plate").value = d.items[0].plate;
+    PK.alert("已填入：" + d.items[0].plate, "info");
+  });
+};
+
+document.getElementById("btn-exit").onclick = function () {
+  var plate = document.getElementById("plate").value.trim();
+  if (!plate) { PK.alert("请先输入车牌号", "error"); return; }
+
+  var btn = this;
+  btn.disabled = true;
+  PK.post("/api/vehicles/exit", { plate: plate })
+    .then(function (t) {
+      var mins = t.duration_minutes;
+      var html = '<div class="card"><h3 class="card-title">结算完成</h3>' +
+        '<div class="result-panel"><div class="fee-big">' + PK.money(t.fee) + "</div>" +
+        '<dl class="kv">' +
+        "<dt>车牌</dt><dd>" + PK.plateChip(t.plate) + "</dd>" +
+        "<dt>车位</dt><dd>" + PK.esc(t.spot_code) + "（已释放）</dd>" +
+        "<dt>入场时间</dt><dd>" + PK.esc(t.entered_at) + "</dd>" +
+        "<dt>出场时间</dt><dd>" + PK.esc(t.exited_at) + "</dd>" +
+        "<dt>停车时长</dt><dd>" + PK.duration(mins * 60) + "（" + mins + " 分钟）</dd>" +
+        "<dt>状态</dt><dd>" + PK.ticketBadge(t.status) + "</dd>" +
+        "</dl></div></div>";
+      document.getElementById("result").innerHTML = html;
+      PK.alert("出场成功，应收 " + PK.money(t.fee), "ok");
+      document.getElementById("plate").value = "";
+      loadParking();
+    })
+    .catch(function (e) {
+      document.getElementById("result").innerHTML = "";
+      PK.alert(e.message + "（" + (e.code || e.status) + "）", "error");
+    })
+    .finally(function () { btn.disabled = false; });
+};
+
+function loadParking() {
+  PK.get("/api/tickets?status=PARKING").then(function (d) {
+    var rows = "";
+    d.items.forEach(function (t) {
+      rows += '<tr><td><a href="#" data-plate="' + PK.esc(t.plate) + '">' +
+        PK.plateChip(t.plate) + "</a></td>" +
+        "<td>" + PK.esc(t.spot_code) + "</td>" +
+        "<td>" + PK.esc(t.entered_at) + "</td></tr>";
+    });
+    var body = document.getElementById("parking-body");
+    body.innerHTML = rows || '<tr><td colspan="3" class="empty">当前没有在场车辆</td></tr>';
+    var links = body.querySelectorAll("a[data-plate]");
+    for (var i = 0; i < links.length; i++) {
+      links[i].onclick = function (ev) {
+        ev.preventDefault();
+        document.getElementById("plate").value = this.getAttribute("data-plate");
+      };
+    }
+  }).catch(function (e) { PK.alert(e.message, "error"); });
+}
+
+PK.onClockChanged = loadParking;
+loadParking();
+</script>
+{% endblock %}

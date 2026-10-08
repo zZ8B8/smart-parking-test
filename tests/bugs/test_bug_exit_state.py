@@ -1,61 +1,98 @@
 # -*- coding: utf-8 -*-
-"""缺陷复现 · 出场接口缺少状态校验（幂等性 / 数据一致性）
+"""BUG-S2 · 出场接口不幂等，重复出场会释放别人的车位
 
-BUG-S2 exit_vehicle 取该车牌的「最后一条记录」结算，没有校验它是否已经出场过。
-        重复调用出场接口会：① 覆盖已结算的费用；② 再次释放车位 ——
-        如果这期间车位已被别的车占用，就会把**别人正在用的车位**错误释放。
+需求：出场应当是一次性的状态流转 —— 记录从 PARKING 变成 CLOSED 之后，
+再次调用出场接口应被拒绝（400），且不得再次释放车位。
+
+实际：service.exit_vehicle() 取「该车牌最后一条记录」时，
+没有校验它是否已经出场过，也不做幂等。后果有两层：
+
+  1. 同一笔记录被反复「关闭」，重复写 EXIT 流水；
+  2. 更严重的是：车位被释放后如果已经有**另一辆车**停了进去，
+     重复出场会把**别人的车位**一起释放掉 ——
+     车位表显示空闲，但对方还在场，车位可以再卖一次。
+
+复现路径：
+    车 A 入场 → A 出场（车位释放）→ 车 B 入场（拿到同一车位）→ A 再次出场
+                                                        ↑ 这一步会把 B 的车位释放
 """
 import pytest
 
-pytestmark = pytest.mark.known_bug
+from tests.client import ApiError
+from tests.conftest import spot_status_by_id
 
 
-@pytest.mark.xfail(reason="BUG-S2 出场接口未校验记录状态", strict=False)
-def test_bug_s2_second_exit_should_be_rejected(park, leave):
-    """BUG-S2 同一辆车重复出场应被拒绝。
+@pytest.mark.xfail(reason="BUG-S2 出场不幂等：重复出场未被拒绝", strict=True)
+def test_second_exit_should_be_rejected(api):
+    """已经出场的记录再次出场，应返回 400，而不是再次成功。"""
+    api.entry("京A77777")
+    api.advance_clock(1200)
+    api.exit("京A77777")
 
-    期望：第二次出场返回 400（该车已不在场）
-    实际：返回 200，重新结算并覆盖已结算的记录
-    """
-    park("津A12345")
-    assert leave("津A12345").status == 200
-
-    resp = leave("津A12345")
-    assert resp.status == 400, "已出场的车辆竟能再次出场：%s" % resp.payload
+    with pytest.raises(ApiError) as err:
+        api.exit("京A77777")
+    assert err.value.status == 400
 
 
-@pytest.mark.xfail(reason="BUG-S2 重复出场会释放他人正在使用的车位", strict=False)
-def test_bug_s2_second_exit_should_not_release_others_spot(api, park, leave):
-    """BUG-S2 重复出场不应把别人正在使用的车位释放掉。
+@pytest.mark.xfail(reason="BUG-S2 重复出场会把已停入的另一辆车的车位释放掉", strict=True)
+def test_repeat_exit_should_not_free_others_spot(api, db):
+    """A 出场后 B 停进同一车位，A 再次出场不能把 B 的车位释放。"""
+    # 1) 车 A 入场再出场，车位释放
+    a = api.entry("京A77777")
+    api.advance_clock(1200)
+    api.exit("京A77777")
 
-    场景：A 停车 → 出场（车位空出）→ B 停入该车位 → A 再次调用出场接口
-    期望：A 的第二次出场被拒绝，B 的车位不受影响（占用数仍为 1）
-    实际：车位被再次释放，B 还在场但占用数变成 0，车位状态与实际不符
-    """
-    park("津A12345")                                   # A 入场
-    leave("津A12345")                                  # A 出场，车位空出
-    park("津B22222")                                   # B 停进刚空出的车位
-    assert api.get("/api/lot/summary").data["occupied"] == 1
+    # 2) 车 B 入场，拿到同一个车位
+    b = api.entry("京B12345")
+    assert b["spot_id"] == a["spot_id"]
+    assert spot_status_by_id(db, b["spot_id"]) == ("OCCUPIED", "京B12345")
 
-    leave("津A12345")                                  # A 再次出场（A 早已不在场）
+    # 3) 车 A 再次出场（异常操作）
+    try:
+        api.exit("京A77777")
+    except ApiError:
+        pass  # 正确实现会在这里报错，车位自然安全
 
-    data = api.get("/api/lot/summary").data
-    assert data["occupied"] == 1, \
-        "B 仍在场，占用车位却显示为 %d（车位被错误释放）" % data["occupied"]
+    # 4) B 的车位必须仍被占用
+    assert spot_status_by_id(db, b["spot_id"]) == ("OCCUPIED", "京B12345")
 
 
-@pytest.mark.xfail(reason="BUG-S2 重复出场会重新结算并覆盖费用", strict=False)
-def test_bug_s2_second_exit_should_not_recount_fee(park, leave, advance):
-    """BUG-S2 重复出场不应重新结算、覆盖已确定的费用。
+@pytest.mark.xfail(reason="BUG-S2 重复出场重复写 EXIT 流水，车位流水失衡", strict=True)
+def test_repeat_exit_should_not_duplicate_spot_log(api, db):
+    """重复出场不应产生第二条 EXIT 流水。"""
+    api.entry("京A77777")
+    api.advance_clock(1200)
+    api.exit("京A77777")
+    try:
+        api.exit("京A77777")
+    except ApiError:
+        pass
 
-    期望：首次出场时长为 1 小时 → 5 元，之后费用不再变化
-    实际：再次出场时按「入场到现在」重新结算，费用被改写为 8 元
-    """
-    park("津A12345")
-    advance(3600)
-    first = leave("津A12345").data["fee"]
-    assert first == 5.0
+    with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM spot_logs WHERE action = 'EXIT'")
+        n = cur.fetchone()[0]
+    assert n == 1
 
-    advance(3600)
-    second = leave("津A12345").data["fee"]
-    assert second == 5.0, "已结算的订单被重新计费为 %.1f 元" % second
+
+@pytest.mark.xfail(reason="BUG-S2 重复出场导致占用车位数与在场记录数不再相等", strict=True)
+def test_repeat_exit_should_keep_consistency(api):
+    """重复出场之后，车场数据仍应自洽。"""
+    api.entry("京A77777")
+    api.advance_clock(1200)
+    api.exit("京A77777")
+    api.entry("京B12345")      # 另一辆车补位
+    try:
+        api.exit("京A77777")   # 异常重复出场
+    except ApiError:
+        pass
+
+    assert api.consistency()["ok"] is True
+
+
+def test_single_exit_works(api):
+    """对照用例：正常出场一次是完全正确的。"""
+    api.entry("京A77777")
+    api.advance_clock(1200)
+    t = api.exit("京A77777")
+    assert t["status"] == "CLOSED"
+    assert api.consistency()["ok"] is True
