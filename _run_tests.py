@@ -102,6 +102,11 @@ def main():
         print("  想看详细失败原因，在仓库目录执行：")
         print("     %s -m pytest -v --tb=long" % py)
     print("=" * 66)
+    print("")
+    print("  想给页面灌一批演示数据（让系统看起来像真在跑）：")
+    print("     %s demo_data.py" % py)
+    print("  想清掉演示数据、回到干净基线：")
+    print("     %s demo_data.py clear" % py)
     return rc
 
 
