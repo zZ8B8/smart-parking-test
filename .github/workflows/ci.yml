@@ -12,18 +12,18 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      mysql:
-        image: mysql:8.0
+      mariadb:
+        image: mariadb:10.11
         env:
-          MYSQL_ROOT_PASSWORD: "123456"
+          MARIADB_ROOT_PASSWORD: "123456"
+          MARIADB_ROOT_HOST: "%"
         ports:
           - 3306:3306
         options: >-
-          --default-authentication-plugin=mysql_native_password
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456 --silent"
-          --health-interval=5s
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
           --health-timeout=5s
-          --health-retries=30
+          --health-retries=10
 
     env:
       SMARTPARK_DB_HOST: 127.0.0.1
