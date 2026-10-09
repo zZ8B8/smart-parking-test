@@ -254,19 +254,18 @@ def calc_fee(seconds):
     规则：15 分钟内免费；超过后首小时 5 元，
     此后每满 1 小时 3 元（不足 1 小时按 1 小时）；单日封顶 40 元。
 
-    ⚠️ 缺陷 BUG-S1（中 · 计费）：
-      「不足 1 小时按 1 小时」意味着小时数应当**向上取整**（ceil），
-      但这里用的是向下取整（//），导致超出整小时的那部分尾数被抹掉。
-      例如停车 61 分钟（3660 秒）：应收 2 小时 = 5 + 3 = 8 元，
-      实际只按 1 小时收了 5 元 —— 少收 3 元。
-      复现方式见 tests/bugs/test_bug_billing.py
+    ✅ 已修复（原 BUG-S1 · 中 · 计费）：
+      「不足 1 小时按 1 小时」意味着小时数应当**向上取整**（ceil）。
+      修复前用的是向下取整（//），超出整小时的零头被抹掉：
+      停车 61 分钟应收 2 小时（5 + 3 = 8 元），实际只按 1 小时收了 5 元，少收 3 元。
+      回归用例：tests/bugs/test_bug_billing.py
     """
     if seconds <= FREE_SECONDS:
         return 0.0
 
-    # 不足 1 小时按 1 小时计 —— 这里用的是向下取整，
-    # 导致超时部分不足 1 小时时被抹掉（如 61 分钟只按 1 小时收）。
-    hours = int(seconds // 3600)
+    # 「不足 1 小时按 1 小时」＝ 向上取整。
+    # 用整数运算避免浮点误差：(seconds + 3599) // 3600 等价于 ceil(seconds / 3600)。
+    hours = (int(seconds) + 3599) // 3600
     if hours < 1:
         hours = 1
 
@@ -277,17 +276,18 @@ def calc_fee(seconds):
 def _has_free_pass(plate):
     """该车牌是否持有**有效**月卡（可免费出场）。
 
-    ⚠️ 缺陷 BUG-S4（高 · 业务规则）：
-      只判断月卡是否存在，**没有比对有效期**。
-      于是过期月卡依然免费出场 —— 车场持续漏收。
-      复现方式见 tests/bugs/test_bug_card_expiry.py
+    ✅ 已修复（原 BUG-S4 · 高 · 业务规则）：
+      修复前只判断月卡记录是否存在，**没有比对有效期**，
+      于是过期月卡依然免费出场，车场持续漏收。
+      现在要求 valid_until >= 当天才免费（含到期当天）。
+      回归用例：tests/bugs/test_bug_card_expiry.py
     """
     card = db.fetch_one(
         "SELECT plate, valid_until FROM month_cards WHERE plate = %s", (plate,))
     if card is None:
         return False
-    # 只判断月卡是否存在，没有比对有效期 —— 过期月卡依然免费。
-    return True
+    # 比对有效期：到期当天仍算有效（>=），次日起按普通车辆计费。
+    return card["valid_until"].strftime("%Y-%m-%d") >= _now().strftime("%Y-%m-%d")
 
 
 def exit_vehicle(plate):
