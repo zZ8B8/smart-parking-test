@@ -1,0 +1,53 @@
+name: 接口自动化测试
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    name: pytest 全量回归
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: "123456"
+        ports:
+          - 3306:3306
+        options: >-
+          --default-authentication-plugin=mysql_native_password
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    env:
+      SMARTPARK_DB_HOST: 127.0.0.1
+      SMARTPARK_DB_PORT: "3306"
+      SMARTPARK_DB_USER: root
+      SMARTPARK_DB_PASSWORD: "123456"
+      SMARTPARK_DB_NAME: smart_parking
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 建库 + 建表 + 灌初始数据
+        run: python init_db.py
+
+      - name: 跑接口自动化测试
+        run: python -m pytest -q --tb=short

@@ -242,3 +242,20 @@ SMARTPARK_DB_LATENCY=0 pytest tests/bugs/test_bug_concurrent_entry.py
 `config.py` 里的 `SIMULATE_DB_LATENCY` 是给并发缺陷用的：
 真实系统里「查车位」和「占车位」之间必然有一次网络往返，正是这段间隙让超卖成立。
 本机数据库同机访问太快，窗口小到偶现，所以把延迟显式化，让缺陷**稳定复现**。
+
+---
+
+## 九、持续集成（GitHub Actions）
+
+每次 push 到 `main` 都会自动跑一遍完整回归：起一个 MySQL 8 容器 → 建库灌数据 → 跑全部接口自动化用例。
+结果看仓库上方 **Actions** 页签。
+
+工作流：`.github/workflows/ci.yml`，核心只有两步：
+
+```bash
+python init_db.py          # 建库 + 建表 + 灌初始数据
+python -m pytest -q        # 102 个测试点（95 passed + 7 xfailed）
+```
+
+> 之所以不用额外启动服务：`tests/conftest.py` 会自己用 werkzeug 起一个被测服务（独立端口），
+> 每个用例执行前把数据重置回 `sql/seed.sql`，用例之间互不污染、可任意顺序重跑。
