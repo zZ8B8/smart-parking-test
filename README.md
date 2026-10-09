@@ -1,5 +1,7 @@
 # 智能停车管理系统 smart-parking
 
+![接口自动化测试](https://github.com/zZ8B8/smart-parking-test/actions/workflows/ci.yml/badge.svg)
+
 一个完整的停车场管理系统，用作**软件测试练习靶场**：能真实地分配车位、计费、结算出口，
 也能真实地把一个车位同时发给 20 辆车、把别人还停着的车位释放掉、让过期月卡永远免费。
 
